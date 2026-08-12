@@ -1,0 +1,413 @@
+package.json
+{
+  "name": "atoki-bot",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "mongoose": "^8.5.0"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  }
+}
+.env.example
+TOKEN=MTUxMzMyMTk4NDQ4OTAzMzgxOA.G-drfb.ffX3mQEogJTBowjQasguIRjc1jJEo32thBHt3g
+MONGO_URI=
+OWNER_IDS=1443924448230117436
+BOT_INVITE_URL=https://discord.com/oauth2/authorize?client_id=1513321984489033818&permissions=8&scope=bot
+SUPPORT_SERVER_URL=https://discord.gg/Sq55JBAE8
+DEFAULT_PREFIX=!
+BOT_VERSION=1.0.0
+src/config/emojis.js
+module.exports = {
+    success: "✅",
+    error: "❌",
+    warning: "⚠️",
+    info: "ℹ️",
+    loading: "⏳",
+    home: "🏠",
+    back: "◀️",
+    next: "▶️",
+    close: "❌",
+    shield: "🛡️",
+    security: "🔐",
+    moderation: "🔨",
+    automod: "🤖",
+    jail: "🔒",
+    premium: "💎",
+    social: "📱",
+    leveling: "📈",
+    logging: "📋",
+    monitoring: "🛰️",
+    owner: "👑",
+    team: "🛠️",
+    ban: "🔨",
+    kick: "👢",
+    mute: "🔇",
+    warn: "⚠️",
+    lock: "🔒",
+    unlock: "🔓"
+};
+src/config/colors.js
+module.exports = {
+    success: "#57F287",
+    error: "#ED4245",
+    warning: "#FEE75C",
+    info: "#5865F2",
+    premium: "#FFD700",
+    security: "#2B2D31"
+};
+src/config/config.js
+require('dotenv').config();
+
+module.exports = {
+    TOKEN: process.env.TOKEN,
+    MONGO_URI: process.env.MONGO_URI,
+    OWNER_IDS: (process.env.OWNER_IDS || '').split(',').map(id => id.trim()),
+    BOT_INVITE_URL: process.env.BOT_INVITE_URL,
+    SUPPORT_SERVER_URL: process.env.SUPPORT_SERVER_URL,
+    DEFAULT_PREFIX: process.env.DEFAULT_PREFIX || '!',
+    BOT_VERSION: process.env.BOT_VERSION || '1.0.0'
+};
+src/models/Guild.js
+const mongoose = require('mongoose');
+
+const guildSchema = new mongoose.Schema({
+    guildId: { type: String, required: true, unique: true },
+    prefix: { type: String, default: '!' },
+    premium: {
+        enabled: { type: Boolean, default: false },
+        tier: { type: String, default: 'free' },
+        expiresAt: Date
+    },
+    antinuke: {
+        enabled: { type: Boolean, default: false },
+        logChannelId: String,
+        whitelistedUsers: [String],
+        whitelistedRoles: [String],
+        limits: {
+            channelDelete: { limit: { type: Number, default: 3 }, interval: { type: Number, default: 10 }, action: { type: String, default: 'ban' } },
+            ban: { limit: { type: Number, default: 3 }, interval: { type: Number, default: 10 }, action: { type: String, default: 'ban' } },
+            kick: { limit: { type: Number, default: 5 }, interval: { type: Number, default: 10 }, action: { type: String, default: 'strip' } }
+        }
+    },
+    automod: { enabled: { type: Boolean, default: false } },
+    logging: { enabled: { type: Boolean, default: false }, channelId: String },
+    jail: { enabled: { type: Boolean, default: false }, roleId: String, channelId: String }
+});
+
+module.exports = mongoose.model('Guild', guildSchema);
+src/index.js
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, AuditLogEvent, ChannelType } = require('discord.js');
+const mongoose = require('mongoose');
+const config = require('./config/config');
+const emojis = require('./config/emojis');
+const colors = require('./config/colors');
+const Guild = require('./models/Guild');
+
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildAuditLogs
+    ]
+});
+
+const prefixlessOwners = new Set(config.OWNER_IDS);
+const kickLogs = new Map();
+const banLogs = new Map();
+
+// ✅ READY
+client.on('ready', async () => {
+    console.log(`${emojis.success} ${client.user.tag} ONLINE! Protecting ${client.guilds.cache.size} Servers`);
+    client.user.setActivity(`${config.DEFAULT_PREFIX}help | ${client.guilds.cache.size} Servers`, { type: 3 });
+    try {
+        await mongoose.connect(config.MONGO_URI);
+        console.log(`${emojis.success} MongoDB Connected`);
+    } catch(e) { console.error('MongoDB Error:', e.message); }
+});
+
+// ✅ GUILD COUNT UPDATE
+client.on('guildCreate', g => {
+    console.log(`➕ Joined: ${g.name}`);
+    client.user.setActivity(`${config.DEFAULT_PREFIX}help | ${client.guilds.cache.size} Servers`, { type: 3 });
+});
+client.on('guildDelete', g => {
+    console.log(`➤ Left: ${g.name || 'Unknown'}`);
+    client.user.setActivity(`${config.DEFAULT_PREFIX}help | ${client.guilds.cache.size} Servers`, { type: 3 });
+});
+
+// ✅ HELPER FUNCTIONS
+async function getGuildData(gid) {
+    let d = await Guild.findOne({ guildId: gid });
+    if(!d) d = await Guild.create({ guildId: gid });
+    return d;
+}
+function isOwner(m) { return config.OWNER_IDS.includes(m.id); }
+function isServerOwner(m) { return m.guild.ownerId === m.id || isOwner(m); }
+function hasAdmin(m) { return m.permissions.has(PermissionFlagsBits.Administrator); }
+function botHasAdmin(g) { return g.members.me.permissions.has(PermissionFlagsBits.Administrator); }
+async function getAuditExecutor(g, type, targetId) {
+    try {
+        const l = await g.fetchAuditLogs({ limit: 5, type });
+        return l.entries.find(e => e.targetId === targetId && Date.now() - e.createdAt.getTime() < 5000)?.executor;
+    } catch { return null; }
+}
+async function punishAttacker(g, user, reason) {
+    try {
+        const m = await g.members.fetch(user.id).catch(()=>null);
+        if(m) {
+            if(m.roles.highest.position < g.members.me.roles.highest.position) {
+                await m.roles.set([], reason).catch(()=>null);
+                return `Stripped roles from ${user.tag}`;
+            }
+        }
+        return `Could not punish ${user.tag}`;
+    } catch { return 'Punish failed'; }
+}
+async function sendLog(g, title, desc) {
+    const d = await getGuildData(g.id);
+    if(!d.antinuke.enabled || !d.antinuke.logChannelId) return;
+    const ch = g.channels.cache.get(d.antinuke.logChannelId);
+    if(!ch) return;
+    ch.send({ embeds: [new EmbedBuilder().setColor(colors.error).setTitle(title).setDescription(desc).setTimestamp()] }).catch(()=>null);
+}
+
+// ✅ ANTI-NUKE PROTECTION
+client.on('guildMemberRemove', async m => {
+    if(m.user.bot) return;
+    const d = await getGuildData(m.guild.id);
+    if(!d.antinuke.enabled) return;
+    if(d.antinuke.whitelistedUsers.includes(m.id)) return;
+    kickLogs.set(m.guild.id, [...(kickLogs.get(m.guild.id)||[]), Date.now()]);
+    const rec = (kickLogs.get(m.guild.id)||[]).filter(t => Date.now() - t < 60000);
+    if(rec.length >= d.antinuke.limits.kick.limit) {
+        const ex = await getAuditExecutor(m.guild, AuditLogEvent.MemberKick, m.id);
+        if(ex && !d.antinuke.whitelistedUsers.includes(ex.id) && !config.OWNER_IDS.includes(ex.id)) {
+            await punishAttacker(m.guild, ex, 'Anti-Nuke: Mass Kick Detected');
+            await sendLog(m.guild, `${emojis.shield} ANTI-NUKE TRIGGERED`, `Action: Mass Kick\nUser: ${ex.tag} (${ex.id})\nThreshold: ${rec.length} kicks/min`);
+        }
+    }
+});
+
+client.on('guildBanAdd', async ban => {
+    const u = ban.user;
+    const g = ban.guild;
+    const d = await getGuildData(g.id);
+    if(!d.antinuke.enabled) return;
+    if(d.antinuke.whitelistedUsers.includes(u.id)) return;
+    banLogs.set(g.id, [...(banLogs.get(g.id)||[]), Date.now()]);
+    const rec = (banLogs.get(g.id)||[]).filter(t => Date.now() - t < 60000);
+    if(rec.length >= d.antinuke.limits.ban.limit) {
+        const ex = await getAuditExecutor(g, AuditLogEvent.MemberBanAdd, u.id);
+        if(ex && !d.antinuke.whitelistedUsers.includes(ex.id) && !config.OWNER_IDS.includes(ex.id)) {
+            await punishAttacker(g, ex, 'Anti-Nuke: Mass Ban Detected');
+            await sendLog(g, `${emojis.shield} ANTI-NUKE TRIGGERED`, `Action: Mass Ban\nUser: ${ex.tag} (${ex.id})`);
+        }
+    }
+});
+
+client.on('channelDelete', async ch => {
+    const d = await getGuildData(ch.guild.id);
+    if(!d.antinuke.enabled) return;
+    const ex = await getAuditExecutor(ch.guild, AuditLogEvent.ChannelDelete, ch.id);
+    if(ex && !d.antinuke.whitelistedUsers.includes(ex.id) && !config.OWNER_IDS.includes(ex.id)) {
+        await punishAttacker(ch.guild, ex, 'Anti-Nuke: Channel Deleted');
+        await sendLog(ch.guild, `${emojis.shield} CHANNEL DELETED`, `Channel: ${ch.name}\nDeleted by: ${ex.tag} (${ex.id})`);
+    }
+});
+
+// ✅ HELP MENU
+const helpMenu = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder().setCustomId('help_menu').setPlaceholder('Select Category')
+    .addOptions(
+        { label: '🏠 Home', value: 'home' },
+        { label: '🛡️ Anti-Nuke', value: 'antinuke' },
+        { label: '🔨 Moderation', value: 'moderation' },
+        { label: '🤖 AutoMod', value: 'automod' },
+        { label: '🔒 Jail', value: 'jail' },
+        { label: '💎 Premium', value: 'premium' },
+        { label: '📋 Logging', value: 'logging' },
+        { label: '⚙️ Utility', value: 'utility' }
+    )
+);
+
+function welcomePanel() {
+    return new EmbedBuilder().setColor(colors.info)
+    .setTitle('🛡️ Atoki-Bot Help')
+    .setDescription(`Advanced Anti-Nuke, Moderation, AutoMod, and Server Protection Bot.\n\n[Invite](${config.BOT_INVITE_URL})\n[Support](${config.SUPPORT_SERVER_URL})`);
+}
+
+// ✅ INTERACTION HANDLER
+client.on('interactionCreate', async i => {
+    if(!i.isStringSelectMenu()) return;
+    if(i.customId !== 'help_menu') return;
+    const d = await getGuildData(i.guild.id);
+    let emb;
+    switch(i.values[0]) {
+        case 'home': emb = welcomePanel(); break;
+        case 'antinuke': emb = new EmbedBuilder().setColor(colors.security).setTitle('🛡️ Anti-Nuke Commands')
+            .setDescription(`\`${d.prefix}antinuke enable\` — Turn on protection\n\`${d.prefix}antinuke disable\` — Turn off protection\n\`${d.prefix}antinuke setlog <channelId>\` — Set log channel\n\`${d.prefix}whitelist add @User\` — Whitelist user\n\`${d.prefix}whitelist remove @User\` — Remove from whitelist`); break;
+        case 'moderation': emb = new EmbedBuilder().setColor(colors.info).setTitle('🔨 Moderation Commands')
+            .setDescription(`\`${d.prefix}ban @User [reason]\`\n\`${d.prefix}unban UserID\`\n\`${d.prefix}kick @User [reason]\`\n\`${d.prefix}timeout @User <minutes>\`\n\`${d.prefix}untimeout @User\`\n\`${d.prefix}purge <amount>\`\n\`${d.prefix}lock\` / \`${d.prefix}unlock\``); break;
+        case 'automod': emb = new EmbedBuilder().setColor(colors.info).setTitle('🤖 AutoMod Commands')
+            .setDescription(`\`${d.prefix}automod enable\`\n\`${d.prefix}automod disable\``); break;
+        case 'jail': emb = new EmbedBuilder().setColor(colors.info).setTitle('🔒 Jail Commands')
+            .setDescription(`\`${d.prefix}jail @User [reason]\`\n\`${d.prefix}unjail @User\`\n\`${d.prefix}jail-setup\``); break;
+        case 'premium': emb = new EmbedBuilder().setColor(colors.premium).setTitle('💎 Premium')
+            .setDescription(`Owner Only:\n\`${d.prefix}premium activate <serverId>\`\n\`${d.prefix}premium remove <serverId>\``); break;
+        case 'logging': emb = new EmbedBuilder().setColor(colors.info).setTitle('📋 Logging Commands')
+            .setDescription(`\`${d.prefix}logging setup <channel>\`\n\`${d.prefix}logging enable\`\n\`${d.prefix}logging disable\``); break;
+        case 'utility': emb = new EmbedBuilder().setColor(colors.info).setTitle('⚙️ Utility Commands')
+            .setDescription(`\`${d.prefix}ping\` — Bot latency\n\`${d.prefix}uptime\` — Bot uptime\n\`${d.prefix}prefix <newPrefix>\` — Change server prefix`); break;
+        default: emb = welcomePanel();
+    }
+    await i.update({ embeds: [emb], components: [helpMenu] });
+});
+
+// ✅ MESSAGE COMMANDS
+client.on('messageCreate', async msg => {
+    if(msg.author.bot || !msg.guild) return;
+    const d = await getGuildData(msg.guild.id);
+    let prefix = d.prefix;
+    const mentioned = msg.mentions.users.has(client.user.id);
+    let content = msg.content.trim();
+
+    // Mention Response
+    if(mentioned && !content.replace(/<@!?\d+>/g,'').trim()) {
+        const emb = new EmbedBuilder().setColor(colors.info)
+        .setAuthor({ name: client.user.username, iconURL: client.user.displayAvatarURL() })
+        .setDescription(`**${client.user.username}** v${config.BOT_VERSION}\n\nPrefix: \`${prefix}\`\nLatency: ${Date.now() - msg.createdTimestamp}ms\nAPI Latency: ${Math.round(client.ws.ping)}ms\nServer ID: \`${msg.guild.id}\`\n\n[Invite](${config.BOT_INVITE_URL}) | [Support](${config.SUPPORT_SERVER_URL})`);
+        const m = await msg.reply({ embeds: [emb] });
+        setTimeout(() => m.delete().catch(()=>null), 10000);
+        return;
+    }
+
+    // Prefixless for Owners
+    const isPrefixed = content.startsWith(prefix);
+    const isPrefixless = prefixlessOwners.has(msg.author.id);
+    if(!isPrefixed && !isPrefixless) return;
+    const args = isPrefixed ? content.slice(prefix.length).trim().split(/\s+/) : content.trim().split(/\s+/);
+    const cmd = args.shift()?.toLowerCase();
+    if(!cmd) return;
+    const target = msg.mentions.members.first() || msg.guild.members.cache.get(args[0]);
+
+    // HELP
+    if(cmd === 'help') return msg.reply({ embeds: [welcomePanel()], components: [helpMenu] });
+
+    // PING
+    if(cmd === 'ping') {
+        return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setTitle(`${emojis.success} PONG!`).setDescription(`Latency: ${Date.now() - msg.createdTimestamp}ms\nAPI: ${Math.round(client.ws.ping)}ms`)] });
+    }
+
+    // PREMIUM — OWNER ONLY
+    if(cmd === 'premium') {
+        if(!isOwner(msg.author)) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Only Bot Owner can manage Premium`)] });
+        const sub = args[0]?.toLowerCase();
+        if(sub === 'activate') {
+            const gid = args[1] || msg.guild.id;
+            const g = await getGuildData(gid);
+            g.premium.enabled = true;
+            g.premium.tier = 'premium';
+            await g.save();
+            return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.premium).setDescription(`${emojis.success} Premium Activated for \`${gid}\``)] });
+        }
+        if(sub === 'remove') {
+            const gid = args[1] || msg.guild.id;
+            const g = await getGuildData(gid);
+            g.premium.enabled = false;
+            await g.save();
+            return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Premium Removed for \`${gid}\``)] });
+        }
+        return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.info).setTitle('💎 Premium').setDescription(`Usage:\n\`${prefix}premium activate <serverId>\`\n\`${prefix}premium remove <serverId>\``)] });
+    }
+
+    // ANTINUKE — SERVER OWNER ONLY
+    if(cmd === 'antinuke') {
+        if(!isServerOwner(msg.member)) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Only Server Owner can use Anti-Nuke`)] });
+        const sub = args[0]?.toLowerCase();
+        if(sub === 'setup') {
+            d.antinuke.enabled = true;
+            await d.save();
+            return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Anti-Nuke Enabled! Use \`${prefix}antinuke setlog <channel>\` to set logs`)] });
+        }
+        if(sub === 'enable') { d.antinuke.enabled = true; await d.save(); return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Anti-Nuke Enabled`)] }); }
+        if(sub === 'disable') { d.antinuke.enabled = false; await d.save(); return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.success} Anti-Nuke Disabled`)] }); }
+        if(sub === 'setlog') {
+            const ch = msg.mentions.channels.first() || msg.guild.channels.cache.get(args[0]);
+            if(!ch) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Mention a channel`)] });
+            d.antinuke.logChannelId = ch.id; await d.save();
+            return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Log channel set to ${ch}`)] });
+        }
+        return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.info).setTitle('🛡️ Anti-Nuke Dashboard').setDescription(`Status: ${d.antinuke.enabled ? '✅ Enabled' : '❌ Disabled'}\nLog Channel: ${d.antinuke.logChannelId ? `<#${d.antinuke.logChannelId}>` : 'Not Set'}\n\nCommands:\n\`${prefix}antinuke enable/disable\`\n\`${prefix}antinuke setlog <channel>\`\n\`${prefix}whitelist add/remove @User\``)] });
+    }
+
+    // WHITELIST
+    if(cmd === 'whitelist') {
+        if(!isServerOwner(msg.member)) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Only Server Owner`)] });
+        const sub = args[0]?.toLowerCase();
+        const u = msg.mentions.users.first();
+        if(sub === 'add' && u) {
+            if(!d.antinuke.whitelistedUsers.includes(u.id)) d.antinuke.whitelistedUsers.push(u.id);
+            await d.save();
+            return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Whitelisted: ${u.tag}`)] });
+        }
+        if(sub === 'remove' && u) {
+            d.antinuke.whitelistedUsers = d.antinuke.whitelistedUsers.filter(id => id !== u.id);
+            await d.save();
+            return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Removed: ${u.tag}`)] });
+        }
+        return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.info).setDescription(`Usage: \`${prefix}whitelist add @User\` / \`${prefix}whitelist remove @User\``)] });
+    }
+
+    // MODERATION
+    if(cmd === 'ban') {
+        if(!msg.member.permissions.has(PermissionFlagsBits.BanMembers)) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Missing Permission: BanMembers`)] });
+        if(!target) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Mention a user`)] });
+        if(target.roles.highest.position >= msg.member.roles.highest.position) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Cannot ban — higher or equal role`)] });
+        const reason = args.slice(1).join(' ') || 'No reason';
+        await target.ban({ reason }).catch(()=>null);
+        return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Banned: ${target.user.tag}`)] });
+    }
+    if(cmd === 'kick') {
+        if(!msg.member.permissions.has(PermissionFlagsBits.KickMembers)) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Missing Permission: KickMembers`)] });
+        if(!target) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Mention a user`)] });
+        if(target.roles.highest.position >= msg.member.roles.highest.position) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Cannot kick — higher or equal role`)] });
+        const reason = args.slice(1).join(' ') || 'No reason';
+        await target.kick(reason).catch(()=>null);
+        return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Kicked: ${target.user.tag}`)] });
+    }
+    if(cmd === 'timeout') {
+        if(!msg.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Missing Permission: ModerateMembers`)] });
+        if(!target) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Mention a user`)] });
+        const mins = parseInt(args[1]) || 10;
+        await target.timeout(mins * 60 * 1000, 'Command').catch(()=>null);
+        return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Timed out ${target.user.tag} — ${mins} mins`)] });
+    }
+    if(cmd === 'untimeout') {
+        if(!msg.member.permissions.has(PermissionFlagsBits.ModerateMembers)) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Missing Permission: ModerateMembers`)] });
+        if(!target) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Mention a user`)] });
+        await target.timeout(null).catch(()=>null);
+        return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Removed timeout from ${target.user.tag}`)] });
+    }
+    if(cmd === 'purge') {
+        if(!msg.member.permissions.has(PermissionFlagsBits.ManageMessages)) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Missing Permission: ManageMessages`)] });
+        const amount = parseInt(args[0]) || 10;
+        const del = await msg.channel.bulkDelete(Math.min(amount, 100), true).catch(()=>null);
+        return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Deleted ${del?.size || 0} messages`)], ephemeral: true });
+    }
+    if(cmd === 'prefix') {
+        if(!isServerOwner(msg.member)) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.error).setDescription(`${emojis.error} Only Server Owner`)] });
+        const newPrefix = args[0];
+        if(!newPrefix) return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.info).setDescription(`Current Prefix: \`${d.prefix}\``)] });
+        d.prefix = newPrefix; await d.save();
+        return msg.reply({ embeds: [new EmbedBuilder().setColor(colors.success).setDescription(`${emojis.success} Prefix changed to \`${newPrefix}\``)] });
+    }
+});
+
+// ✅ LOGIN
+client.login(config.TOKEN).catch(e => console.error('Login Error:', e.message));
+  
