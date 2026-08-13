@@ -1,0 +1,12 @@
+{
+  "name": "atoki-bot",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "mongoose": "^8.5.0"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  }
+}
