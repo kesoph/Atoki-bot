@@ -1,4 +1,3 @@
-package.json
 {
   "name": "atoki-bot",
   "version": "1.0.0",
@@ -12,7 +11,7 @@ package.json
   }
 }
 .env.example
-TOKEN=MTUxMzMyMTk4NDQ4OTAzMzgxOA.G-drfb.ffX3mQEogJTBowjQasguIRjc1jJEo32thBHt3g
+TOKEN=
 MONGO_URI=
 OWNER_IDS=1443924448230117436
 BOT_INVITE_URL=https://discord.com/oauth2/authorize?client_id=1513321984489033818&permissions=8&scope=bot
